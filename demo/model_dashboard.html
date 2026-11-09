@@ -261,7 +261,28 @@ const GROUPS = {
 let currentFrame  = F_START + Math.floor(N / 2);
 let currentGroup  = 'Kinetic';
 let currentCrit   = 'seat_reaction';
-let currentModel  = "D3DP FT";
+// "All models" view: overlay every model on the chart; skeleton/stat use the mean
+const ALL_KEY='__ALL__';
+const REAL_MODELS=Object.keys(DATA.models||{});
+const MODEL_COLORS=['#38bdf8','#34d399','#a78bfa','#f87171','#fbbf24','#f472b6','#fb923c','#2dd4bf'];
+let dotTraceIdx=1;
+function meanSeries(arrs){
+  const n=Math.max(0,...arrs.map(a=>Array.isArray(a)?a.length:0)),out=[];
+  for(let i=0;i<n;i++){let s=0,c=0;for(const a of arrs){const v=a?.[i];if(v!=null&&isFinite(v)){s+=v;c++;}}out.push(c?s/c:null);}
+  return out;
+}
+(function buildAllModelsMean(){
+  const sc={},jv={},crits=new Set(),jcrits=new Set();
+  REAL_MODELS.forEach(m=>{Object.keys(DATA.models[m]||{}).forEach(k=>crits.add(k));
+                         Object.keys(DATA.models_jval?.[m]||{}).forEach(k=>jcrits.add(k));});
+  crits.forEach(k=>{sc[k]=meanSeries(REAL_MODELS.map(m=>DATA.models[m]?.[k]));});
+  jcrits.forEach(k=>{const arr=[];for(let j=0;j<17;j++){
+    const parts=REAL_MODELS.map(m=>DATA.models_jval?.[m]?.[k]?.[j]).filter(Array.isArray);
+    arr.push(parts.length?meanSeries(parts):null);}jv[k]=arr;});
+  DATA.models[ALL_KEY]=sc;if(DATA.models_jval)DATA.models_jval[ALL_KEY]=jv;
+})();
+function modelLabel(){return currentModel===ALL_KEY?'All models':(currentModel||'GT labels only');}
+let currentModel  = ALL_KEY;
 let selectedJoint = null;
 let dragging      = false;
 let rafPending    = false;
@@ -556,10 +577,24 @@ function rebuildChart(){
       hovertemplate:`Frame %{x}<br>${meta.label}: %{y:.${meta.dec??3}f}${meta.unit?' '+meta.unit:''}<extra>GT</extra>`});
   }
 
-  if(modY.length){
+  const allYExtra=[];
+  if(modY.length&&currentModel===ALL_KEY){
+    // One line per model
+    REAL_MODELS.forEach((name,i)=>{
+      const y=getChartY(DATA.models[name]||{},DATA.models_jval?.[name]||{});
+      if(!y.length)return;
+      allYExtra.push(...y);
+      traces.push({x:xVals,y,type:'scatter',mode:'lines',name,
+        line:{color:MODEL_COLORS[i%MODEL_COLORS.length],width:1.6},
+        hovertemplate:`${meta.label}: %{y:.${meta.dec??3}f}${meta.unit?' '+meta.unit:''}<extra>${name}</extra>`});
+    });
+  }else if(modY.length){
     traces.push({x:xVals,y:modY,type:'scatter',mode:'lines',name:currentModel,
       line:{color:modCol,width:2.5},
       hovertemplate:`Frame %{x}<br>${meta.label}: %{y:.${meta.dec??3}f}${meta.unit?' '+meta.unit:''}<extra>${currentModel}</extra>`});
+  }
+  dotTraceIdx=traces.length;
+  if(modY.length){
     traces.push({x:[currentFrame],y:[dotMod??dotGT],type:'scatter',mode:'markers',
       marker:{color:modCol,size:12,symbol:'circle',line:{color:'white',width:2}},
       showlegend:false,hoverinfo:'skip'});
@@ -577,7 +612,7 @@ function rebuildChart(){
     return;
   }
 
-  const allY=[...gtY,...modY].filter(v=>v!=null&&isFinite(v));
+  const allY=[...gtY,...modY,...allYExtra].filter(v=>v!=null&&isFinite(v));
   const yMin=allY.length?Math.min(...allY):0;
   const yMax=allY.length?Math.max(...allY):1;
   const yPad=(yMax-yMin)*0.12||0.1;
@@ -602,7 +637,7 @@ function rebuildChart(){
   },{displayModeBar:false,responsive:true}).then(()=>{chartReady=true;});
 
   const scopeLabel=jName?`${jName}`:'all joints (aggregate)';
-  chartMeta.textContent=`${meta.desc||meta.label}  ·  ${scopeLabel}  ·  ${currentModel||"GT only"} (solid) vs GT label (dotted)`;
+  chartMeta.textContent=`${meta.desc||meta.label}  ·  ${scopeLabel}  ·  ${currentModel===ALL_KEY?"All models (coloured lines; skeleton colour = mean of models)":(currentModel||"GT only")+" (solid)"} vs GT label (dotted)`;
 }
 
 function updateChartDot(){
@@ -613,7 +648,7 @@ function updateChartDot(){
   const gtY=getChartY(DATA.gt,DATA.gt_jval||{});
   if(!modY.length)return;
   const dotMod=modY[cen]??null, dotGT=gtY[cen]??0;
-  const traceIdx=gtY.length?2:1;
+  const traceIdx=dotTraceIdx;
   Plotly.restyle('chart',{x:[[currentFrame]],y:[[dotMod??dotGT]]},[traceIdx]);
   const yr=document.getElementById('chart')._fullLayout?.yaxis?.range??[0,1];
   Plotly.relayout('chart',{
@@ -672,13 +707,13 @@ function init(){
   document.getElementById('lblStart').textContent=`Frame ${F_START}  (${(F_START/FPS).toFixed(1)}s)`;
   document.getElementById('lblEnd').textContent=`Frame ${F_END}  (${(F_END/FPS).toFixed(1)}s)`;
 
-  Object.keys(DATA.models).forEach(name=>{
+  {const o=document.createElement('option');o.value=ALL_KEY;o.textContent='All models (overlay)';modelSel.appendChild(o);}
+  REAL_MODELS.forEach(name=>{
     const o=document.createElement('option');o.value=o.textContent=name;modelSel.appendChild(o);
   });
-  // Default to D3DP FT; header labels follow the dropdown
-  function setModelLabels(){const t=currentModel||'GT labels only';document.getElementById('modelTitle').textContent=t;document.getElementById('modelBadge').textContent=t;}
-  if(DATA.models['D3DP FT'])modelSel.value='D3DP FT';
-  else{currentModel=modelSel.options[1]?.value||'';modelSel.value=currentModel;}
+  // Default to "All models"; header labels follow the dropdown
+  function setModelLabels(){const t=modelLabel();document.getElementById('modelTitle').textContent=t;document.getElementById('modelBadge').textContent=t;}
+  modelSel.value=ALL_KEY;setModelLabels();
 
   modelSel.addEventListener('change',()=>{
     currentModel=modelSel.value;setModelLabels();computeCritRange();updateColorbar();rebuildChart();
